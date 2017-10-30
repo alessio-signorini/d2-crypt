@@ -1,0 +1,93 @@
+#!/home/alessio/.rvm/rubies/ruby-2.4.2/bin/ruby
+
+require 'openssl'
+require 'zlib'
+require 'securerandom'
+require 'zip'
+
+
+def setup_cipher(key, auth_data, iv, auth_tag)
+  cipher = OpenSSL::Cipher.new('aes-256-gcm').decrypt
+  cipher.key = key
+  cipher.iv = iv
+  cipher.auth_data = auth_data
+  cipher.auth_tag = auth_tag
+
+  return cipher
+end
+
+
+def decrypt_aes_key(data)
+  rsa = OpenSSL::PKey::RSA.new(File.read(File.join(File.dirname($0), 'local-private-key.pem')))
+  rsa.private_decrypt(data, OpenSSL::PKey::RSA::PKCS1_OAEP_PADDING)
+end
+
+
+def verify_signature(signature, data)
+  rsa = OpenSSL::PKey::RSA.new(File.read(File.join(File.dirname($0), 'remote-public-key.pem')))
+  rsa.verify(OpenSSL::Digest::SHA256.new, signature, data)
+end
+
+
+def iv_and_auth_tag(entry)
+  input_fd = entry.get_input_stream
+
+  iv = input_fd.read(12)
+
+  to_read = entry.size - 12 - 16
+  while (to_read > 0)
+    x = input_fd.read(to_read)
+    to_read = to_read - x.size
+  end
+
+  return iv, input_fd.read(16)
+end
+
+
+def decrypt_entry(key, entry, output_dir, auth_data='')
+  iv, auth_tag = iv_and_auth_tag(entry)
+
+  cipher = setup_cipher(key, auth_data, iv, auth_tag)
+
+  input_fd = entry.get_input_stream
+  to_read = entry.size - 12 - 16
+
+  input_fd.read(12)
+
+  File.open(File.join(output_dir, entry.name), 'wb') do |output|
+    while (to_read > 0)
+      encrypted   = input_fd.read(to_read)
+      compressed  = cipher.update(encrypted)
+      output.write(Zlib::Inflate.inflate(compressed))
+
+      to_read = to_read - encrypted.size
+    end
+
+    output.write cipher.final
+  end
+end
+
+
+
+
+################################################################################
+unless ARGV.size > 0
+  puts "Usage: d2-decrypt file.enc [output_dir]"
+  puts ''
+  exit 1
+end
+
+output_dir = ARGV[1] || '.'
+
+Zip::ZipInputStream.open(ARGV.first) do |zis|
+  encrypted_key = zis.get_next_entry.get_input_stream.read(256)
+  key = decrypt_aes_key(encrypted_key)
+
+  signature = zis.get_next_entry.get_input_stream.read(256)
+  verified = verify_signature(signature, encrypted_key)
+
+  while (entry = zis.get_next_entry)
+    decrypt_entry(key, entry, output_dir, '1234567890123456')
+  end
+end
+################################################################################

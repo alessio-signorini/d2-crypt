@@ -1,0 +1,81 @@
+#!/home/alessio/.rvm/rubies/ruby-2.4.2/bin/ruby
+
+require 'openssl'
+require 'zlib'
+require 'securerandom'
+require 'zip'
+
+
+def setup_cipher(key, auth_data, iv=OpenSSL::Random.random_bytes(12))
+  cipher = OpenSSL::Cipher.new('aes-256-gcm').encrypt
+  cipher.key = key
+  cipher.iv = iv
+  cipher.auth_data = auth_data
+
+  return cipher, iv
+end
+
+
+def compress_and_encrypt_file(cipher, iv, input_path, output)
+  output.write(iv)
+
+  File.open(input_path, 'r') do |input|
+    until input.eof?
+      block_read = input.read(65536)
+      compressed = Zlib::Deflate.deflate(block_read, Zlib::FINISH)
+      encrypted  = cipher.update(compressed)
+
+      output.write(encrypted)
+    end
+  end
+
+  output.write(cipher.final + cipher.auth_tag)
+end
+
+
+def sort_files(files)
+  files.group_by{|x| File.basename(x, '.*')}.map.with_index do |v,i|
+    v[1].sort{|a,b| File.extname(a) == 'info' ? -1 : 1}.map do |x|
+      ["file#{i+1}" + File.extname(x), x]
+    end
+  end.flatten(1)
+end
+
+
+def create_upload(output_file, files, key, auth_data='')
+  Zip::ZipOutputStream.open(output_file) do |zos|
+
+    zos.put_next_entry('key')
+    remote = OpenSSL::PKey::RSA.new(File.read(File.join(File.dirname($0), 'remote-public-key.pem')))
+    encrypted = remote.public_encrypt(key, OpenSSL::PKey::RSA::PKCS1_OAEP_PADDING)
+    zos.write encrypted
+
+    zos.put_next_entry('sign')
+    local  = OpenSSL::PKey::RSA.new(File.read(File.join(File.dirname($0), 'local-private-key.pem')))
+    zos.write local.sign(OpenSSL::Digest::SHA256.new, encrypted)
+
+    sort_files(files).each do |internal_name, file|
+      zos.put_next_entry(internal_name)
+      cipher, iv = setup_cipher(key, auth_data)
+      compress_and_encrypt_file(cipher, iv, file, zos)
+    end
+  end
+end
+
+
+
+
+################################################################################
+unless ARGV.size > 1
+  puts "Usage: d2-encrypt [fileN.data fileN.info]"
+  puts ''
+end
+
+files = ARGV.select{|x| x =~ /\.(?:info|data)$/}.select{|x| File.exists?(x)}
+keys  = [ OpenSSL::Random.random_bytes(32), '1234567890123456' ]
+uuid  = SecureRandom.uuid
+
+create_upload(uuid + '.enc', files, *keys)
+
+puts File.expand_path('./' + uuid + '.enc')
+################################################################################

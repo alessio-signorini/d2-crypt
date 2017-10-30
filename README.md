@@ -51,3 +51,15 @@ To decrypt files using ``d2-decrypt.rb`` one can type
 d2-decrypt b3811a03-cc9b-4e67-ad8e-e97d22b0668f.enc
 d2-decrypt b3811a03-cc9b-4e67-ad8e-e97d22b0668f.enc /tmp
 ````
+
+To test locally, just symlink ``local-public-key.pem`` into ``remove-public-key.pem`` so you will be able to decrypt what you have encrypted.
+
+## How to generate a Public Key Pair
+You can use ``openssl`` to generate the private key
+````
+openssl genpkey -algorithm RSA -out private_key.pem -pkeyopt rsa_keygen_bits:2048
+````
+and then extracted the public key with this command
+````
+openssl rsa -pubout -in private_key.pem -out public_key.pem
+````

@@ -3,8 +3,8 @@
 require 'openssl'
 require 'zlib'
 require 'securerandom'
-require 'zip/zip'
-
+require 'zip'
+require 'fileutils'
 
 def setup_cipher(key, auth_data, iv, auth_tag)
   cipher = OpenSSL::Cipher.new('aes-256-gcm').decrypt
@@ -51,10 +51,12 @@ def decrypt_entry(key, entry, output_dir, auth_data='')
 
   input_fd = entry.get_input_stream
   to_read = entry.size - 12 - 16
-
   input_fd.read(12)
 
-  File.open(File.join(output_dir, entry.name), 'wb') do |output|
+  output_path = File.join(output_dir, entry.name)
+  FileUtils.mkdir_p(File.dirname(output_path))
+
+  File.open(output_path, 'wb') do |output|
     while (to_read > 0)
       encrypted   = input_fd.read(to_read)
       compressed  = cipher.update(encrypted)
@@ -72,22 +74,23 @@ end
 
 ################################################################################
 unless ARGV.size > 0
-  puts "Usage: d2-decrypt file.enc [output_dir]"
+  puts "Usage: d2-decrypt <file.zip> [output_dir] [auth_data]"
   puts ''
   exit 1
 end
 
 output_dir = ARGV[1] || '.'
+auth_data  = ARGV[2] || ENV['AUTH_DATA'] || '1234567890123456'
 
-Zip::ZipInputStream.open(ARGV.first) do |zis|
-  encrypted_key = zis.get_next_entry.get_input_stream.read(256)
+Zip::File.open(ARGV.first) do |zis|
+  encrypted_key = zis.read('key')
   key = decrypt_aes_key(encrypted_key)
 
-  signature = zis.get_next_entry.get_input_stream.read(256)
+  signature = zis.read('sign')
   verified = verify_signature(signature, encrypted_key)
 
-  while (entry = zis.get_next_entry)
-    decrypt_entry(key, entry, output_dir, '1234567890123456')
+  zis.entries.drop(2).each do |entry|
+    decrypt_entry(key, entry, output_dir, auth_data)
   end
 end
 ################################################################################
